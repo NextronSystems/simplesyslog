@@ -41,7 +41,7 @@ func (ss SyslogServer) Send(message string, facility string, severity string) {
 	// Full Message
 	var full_message = fmt.Sprintf("%s %s", header, message)
 
-	fmt.Println(full_message)
+	// fmt.Println(full_message)
 	fmt.Fprintf(conn, full_message)
 	conn.Close()
 }

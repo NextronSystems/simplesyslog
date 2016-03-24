@@ -34,9 +34,9 @@ func (ss SyslogServer) Send(message string, facility string, severity string) {
 
 	// Prepare Header
 	var pri = (f * 8) + s
-	var timestamp = time.Now().Format(time.RFC3339)
+	var timestamp = time.Now().Format("Jan 2 15:04:05")
 	var hostname, _ = os.Hostname()
-	var header = fmt.Sprintf("<%d>1 %s %s", pri, timestamp, hostname)
+	var header = fmt.Sprintf("<%d>%s %s", pri, timestamp, hostname)
 
 	// Full Message
 	var full_message = fmt.Sprintf("%s %s", header, message)
@@ -47,7 +47,7 @@ func (ss SyslogServer) Send(message string, facility string, severity string) {
 }
 
 // Syslog severities
-// See https://tools.ietf.org/html/rfc5424
+// See https://www.ietf.org/rfc/rfc3164.txt
 var severities = map[string]int{
 	"emergency": 0,
 	"alert":     1,
@@ -60,7 +60,7 @@ var severities = map[string]int{
 }
 
 // Syslog facilities
-// See https://tools.ietf.org/html/rfc5424
+// See https://www.ietf.org/rfc/rfc3164.txt
 var facilities = map[string]int{
 	"kernel":     0,
 	"user-level": 1,

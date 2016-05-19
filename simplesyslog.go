@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,41 @@ import (
 type SyslogServer struct {
 	ServerIP   string
 	ServerPort int
+	udpConn    *net.UDPConn
+	isActive   bool
+	hostname   string
+	hostip     string
+}
+
+// initialize Syslog connection
+func (ss *SyslogServer) Initialize() (bool, string) {
+	// Preset
+	ss.isActive = false
+
+	// Server Target
+	var serverSocket = fmt.Sprintf("%s:%d", ss.ServerIP, ss.ServerPort)
+	ServerAddr, err := net.ResolveUDPAddr("udp", serverSocket)
+	if err != nil {
+		return false, "Cannot resolve target address"
+	}
+	// Connect
+	var con_err error
+	ss.udpConn, con_err = net.DialUDP("udp", nil, ServerAddr)
+	if con_err != nil {
+		return false, "Cannot connect to target system"
+	}
+
+	// Hostname and Local IP address
+	var err_hn error
+	ss.hostname, err_hn = os.Hostname()
+	if err_hn != nil {
+		ss.hostname = "unknown"
+	}
+	ss.hostip = strings.Split(fmt.Sprintf("%v", ss.udpConn.LocalAddr()), ":")[0]
+
+	// Everything went fine
+	ss.isActive = true
+	return true, "Connection succeeded"
 }
 
 // Send allows to send a syslog message to the set server and port
@@ -23,27 +59,22 @@ func (ss SyslogServer) Send(message string, facility string, severity string) {
 	var f = facilities[facility]
 	var s = severities[severity]
 
-	// Server Target
-	var serverSocket = fmt.Sprintf("%s:%d", ss.ServerIP, ss.ServerPort)
-	ServerAddr, err := net.ResolveUDPAddr("udp", serverSocket)
-	CheckError(err)
-	// Connect
-	conn, err := net.DialUDP("udp", nil, ServerAddr)
-	CheckError(err)
-	defer conn.Close()
-
 	// Prepare Header
-	var pri = (f * 8) + s
-	var timestamp = time.Now().Format("Jan 2 15:04:05")
-	var hostname, _ = os.Hostname()
-	var header = fmt.Sprintf("<%d>%s %s", pri, timestamp, hostname)
+	pri := (f * 8) + s
+	timestamp := time.Now().Format("Jan _2 15:04:05")
+	hostnameCombi := fmt.Sprintf("%s/%s", ss.hostname, ss.hostip)
+	header := fmt.Sprintf("<%d>%s %s", pri, timestamp, hostnameCombi)
 
 	// Full Message
-	var full_message = fmt.Sprintf("%s %s", header, message)
+	full_message := fmt.Sprintf("%s %s", header, message)
 
 	// fmt.Println(full_message)
-	fmt.Fprintf(conn, full_message)
-	conn.Close()
+	fmt.Fprintf(ss.udpConn, full_message)
+}
+
+// Terminate closes the connection gracefully
+func (ss SyslogServer) Terminate() {
+	ss.udpConn.Close()
 }
 
 // Syslog severities
@@ -86,11 +117,4 @@ var facilities = map[string]int{
 	"local5":     21,
 	"local6":     22,
 	"local7":     23,
-}
-
-// CheckError is a simple error checker function
-func CheckError(err error) {
-	if err != nil {
-		fmt.Println("Error: ", err)
-	}
 }

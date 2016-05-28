@@ -21,6 +21,8 @@ type SyslogServer struct {
 	isActive   bool
 	hostname   string
 	hostip     string
+	Rfc3164    bool
+	Rfc5424    bool
 }
 
 // initialize Syslog connection
@@ -55,7 +57,7 @@ func (ss *SyslogServer) Initialize() (bool, string) {
 }
 
 // Send allows to send a syslog message to the set server and port
-func (ss SyslogServer) Send(message string, facility string, severity string) {
+func (ss *SyslogServer) Send(message string, facility string, severity string) {
 	var f = facilities[facility]
 	var s = severities[severity]
 
@@ -65,6 +67,14 @@ func (ss SyslogServer) Send(message string, facility string, severity string) {
 	hostnameCombi := fmt.Sprintf("%s/%s", ss.hostname, ss.hostip)
 	header := fmt.Sprintf("<%d>%s %s", pri, timestamp, hostnameCombi)
 
+	// RFC length reduction
+	if ss.Rfc3164 && len(message) > 1024 {
+		message = fmt.Sprintf("%s...", message[:1020])
+	}
+	if ss.Rfc5424 && len(message) > 2048 {
+		message = fmt.Sprintf("%s...", message[:2044])
+	}
+
 	// Full Message
 	full_message := fmt.Sprintf("%s %s", header, message)
 
@@ -73,7 +83,7 @@ func (ss SyslogServer) Send(message string, facility string, severity string) {
 }
 
 // Terminate closes the connection gracefully
-func (ss SyslogServer) Terminate() {
+func (ss *SyslogServer) Terminate() {
 	ss.udpConn.Close()
 }
 

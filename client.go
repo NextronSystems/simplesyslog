@@ -34,8 +34,8 @@ const (
 	DefaultIP string = ""
 )
 
-// Server holds a connection to a specified address
-type Server struct {
+// Client holds a connection to a specified address
+type Client struct {
 	Hostname string   // Hostname of the system
 	IP       string   // IP of the system
 	Rfc3164  bool     // rfc standard for length reduction
@@ -43,12 +43,12 @@ type Server struct {
 	conn     net.Conn // connection to the syslog server
 }
 
-// NewServer initializes a new server connection.
+// NewClient initializes a new server connection.
 // Examples:
-//   - NewServer(ConnectionUDP, "172.0.0.1:514")
-//   - NewServer(ConnectionTCP, ":514")
-//   - NewServer(ConnectionTLS, "172.0.0.1:514")
-func NewServer(connectionType ConnectionType, address string) (*Server, error) {
+//   - NewClient(ConnectionUDP, "172.0.0.1:514")
+//   - NewClient(ConnectionTCP, ":514")
+//   - NewClient(ConnectionTLS, "172.0.0.1:514")
+func NewClient(connectionType ConnectionType, address string) (*Client, error) {
 	// Validate data
 	if connectionType != ConnectionUDP && connectionType != ConnectionTCP && connectionType != ConnectionTLS {
 		return nil, fmt.Errorf("unknown connection type '%s'", connectionType)
@@ -78,7 +78,7 @@ func NewServer(connectionType ConnectionType, address string) (*Server, error) {
 		ip = DefaultIP
 	}
 	// return the server
-	return &Server{
+	return &Client{
 		Hostname: hostname,
 		IP:       ip,
 		conn:     conn,
@@ -89,23 +89,23 @@ func NewServer(connectionType ConnectionType, address string) (*Server, error) {
 // Examples:
 //   - Send("foo", syslog.LOG_LOCAL0|syslog.LOG_NOTICE)
 //   - Send("bar", syslog.LOG_DAEMON|syslog.LOG_DEBUG)
-func (server *Server) Send(message string, priority syslog.Priority) error {
+func (client *Client) Send(message string, priority syslog.Priority) error {
 	timestamp := time.Now().Format("Jan _2 15:04:05")
-	hostnameCombi := fmt.Sprintf("%s/%s", server.Hostname, server.IP)
+	hostnameCombi := fmt.Sprintf("%s/%s", client.Hostname, client.IP)
 	header := fmt.Sprintf("<%d>%s %s", int(priority), timestamp, hostnameCombi)
 	// RFC length reduction
-	if server.Rfc3164 && len(message) > 1024 {
+	if client.Rfc3164 && len(message) > 1024 {
 		message = fmt.Sprintf("%s...", message[:1020])
 	}
-	if server.Rfc5424 && len(message) > 2048 {
+	if client.Rfc5424 && len(message) > 2048 {
 		message = fmt.Sprintf("%s...", message[:2044])
 	}
 	// Send message
-	_, err := fmt.Fprintf(server.conn, "%s %s", header, message)
+	_, err := fmt.Fprintf(client.conn, "%s %s", header, message)
 	return err
 }
 
 // Close closes the server connection gracefully.
-func (server *Server) Close() error {
-	return server.conn.Close()
+func (client *Client) Close() error {
+	return client.conn.Close()
 }

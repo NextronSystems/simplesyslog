@@ -50,13 +50,13 @@ var tlsConfig *tls.Config
 
 var messageRegex = regexp.MustCompile(`<133>[A-Z][a-z]{2} (([0-9]{2})|( [0-9])) [0-9]{2}:[0-9]{2}:[0-9]{2} testing\/127\.0\.0\.1 foo bar baz`)
 
-func TestNewServer(t *testing.T) {
-	testNewServerTCP(t, false)
-	testNewServerTCP(t, true)
-	testNewServerUDP(t)
+func TestNewClient(t *testing.T) {
+	testNewClientTCP(t, false)
+	testNewClientTCP(t, true)
+	testNewClientUDP(t)
 }
 
-func testNewServerUDP(t *testing.T) {
+func testNewClientUDP(t *testing.T) {
 	t.Logf("testing udp")
 	serverAddr, err := net.ResolveUDPAddr("udp", host)
 	if err != nil {
@@ -74,13 +74,13 @@ func testNewServerUDP(t *testing.T) {
 		/*
 		 * Send the message 'foo bar baz' to the syslog server
 		 */
-		server, err := NewServer(ConnectionUDP, host)
+		client, err := NewClient(ConnectionUDP, host)
 		if err != nil {
 			t.Fatalf("could not initialize server: %s", err)
 		}
-		server.Hostname = "testing" // overwrite hostname for testing
-		defer server.Close()
-		if err := server.Send("foo bar baz", syslog.LOG_LOCAL0|syslog.LOG_NOTICE); err != nil {
+		client.Hostname = "testing" // overwrite hostname for testing
+		defer client.Close()
+		if err := client.Send("foo bar baz", syslog.LOG_LOCAL0|syslog.LOG_NOTICE); err != nil {
 			t.Fatalf("could not send message: %s", err)
 		}
 	}()
@@ -97,7 +97,7 @@ func testNewServerUDP(t *testing.T) {
 	}
 }
 
-func testNewServerTCP(t *testing.T, useTLS bool) {
+func testNewClientTCP(t *testing.T, useTLS bool) {
 	t.Logf("testing tcp with tls '%s'", strconv.FormatBool(useTLS))
 	var (
 		listener net.Listener
@@ -120,13 +120,13 @@ func testNewServerTCP(t *testing.T, useTLS bool) {
 		if useTLS {
 			connectionType = ConnectionTLS
 		}
-		server, err := NewServer(connectionType, host)
+		client, err := NewClient(connectionType, host)
 		if err != nil {
 			t.Fatalf("could not initialize server: %s", err)
 		}
-		server.Hostname = "testing" // overwrite hostname for testing
-		defer server.Close()
-		if err := server.Send("foo bar baz", syslog.LOG_LOCAL0|syslog.LOG_NOTICE); err != nil {
+		client.Hostname = "testing" // overwrite hostname for testing
+		defer client.Close()
+		if err := client.Send("foo bar baz", syslog.LOG_LOCAL0|syslog.LOG_NOTICE); err != nil {
 			t.Fatalf("could not send message: %s", err)
 		}
 	}()

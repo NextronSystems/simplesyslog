@@ -5,7 +5,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"io/ioutil"
-	"log/syslog"
 	"net"
 	"regexp"
 	"strconv"
@@ -80,7 +79,7 @@ func testNewClientUDP(t *testing.T) {
 		}
 		client.Hostname = "testing" // overwrite hostname for testing
 		defer client.Close()
-		if err := client.Send("foo bar baz", syslog.LOG_LOCAL0|syslog.LOG_NOTICE); err != nil {
+		if err := client.Send("foo bar baz", LOG_LOCAL0|LOG_NOTICE); err != nil {
 			t.Fatalf("could not send message: %s", err)
 		}
 	}()
@@ -126,7 +125,7 @@ func testNewClientTCP(t *testing.T, useTLS bool) {
 		}
 		client.Hostname = "testing" // overwrite hostname for testing
 		defer client.Close()
-		if err := client.Send("foo bar baz", syslog.LOG_LOCAL0|syslog.LOG_NOTICE); err != nil {
+		if err := client.Send("foo bar baz", LOG_LOCAL0|LOG_NOTICE); err != nil {
 			t.Fatalf("could not send message: %s", err)
 		}
 	}()

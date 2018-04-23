@@ -9,7 +9,6 @@ package simplesyslog
 import (
 	"crypto/tls"
 	"fmt"
-	"log/syslog"
 	"net"
 	"os"
 	"time"
@@ -87,9 +86,9 @@ func NewClient(connectionType ConnectionType, address string) (*Client, error) {
 
 // Send sends a syslog message with a specified priority.
 // Examples:
-//   - Send("foo", syslog.LOG_LOCAL0|syslog.LOG_NOTICE)
-//   - Send("bar", syslog.LOG_DAEMON|syslog.LOG_DEBUG)
-func (client *Client) Send(message string, priority syslog.Priority) error {
+//   - Send("foo", LOG_LOCAL0|LOG_NOTICE)
+//   - Send("bar", LOG_DAEMON|LOG_DEBUG)
+func (client *Client) Send(message string, priority Priority) error {
 	timestamp := time.Now().Format("Jan _2 15:04:05")
 	hostnameCombi := fmt.Sprintf("%s/%s", client.Hostname, client.IP)
 	header := fmt.Sprintf("<%d>%s %s", int(priority), timestamp, hostnameCombi)

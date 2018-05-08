@@ -104,6 +104,23 @@ func (client *Client) Send(message string, priority Priority) error {
 	return err
 }
 
+// SendRaw sends a syslog message without adding syslog header.
+// Examples:
+//   - SendRaw("foo")
+//   - SendRaw("bar")
+func (client *Client) SendRaw(message string) error {
+	// RFC length reduction
+	if client.Rfc3164 && len(message) > 1024 {
+		message = fmt.Sprintf("%s...", message[:1020])
+	}
+	if client.Rfc5424 && len(message) > 2048 {
+		message = fmt.Sprintf("%s...", message[:2044])
+	}
+	// Send message
+	_, err := fmt.Fprintf(client.conn, message)
+	return err
+}
+
 // Close closes the server connection gracefully.
 func (client *Client) Close() error {
 	return client.conn.Close()

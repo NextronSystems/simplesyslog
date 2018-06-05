@@ -11,4 +11,4 @@ go:
 go_import_path: github.com/Neo23x0/simplesyslog
 notifications:
   email: false
-  slack: nextron-systems:Q1f2uRSIFH0Sf5IzT884z4YR
+  slack: nextron-systems:51vB5h6MxkSbX5iMpscrvOza

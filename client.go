@@ -35,11 +35,12 @@ const (
 
 // Client holds a connection to a specified address
 type Client struct {
-	Hostname string   // Hostname of the system
-	IP       string   // IP of the system
-	Rfc3164  bool     // rfc standard for length reduction
-	Rfc5424  bool     // rfc standard for length reduction
-	conn     net.Conn // connection to the syslog server
+	Hostname     string   // Hostname of the system
+	IP           string   // IP of the system
+	Rfc3164      bool     // rfc standard for length reduction
+	Rfc5424      bool     // rfc standard for length reduction
+	HostnameOnly bool     // Only use hostname in syslog header instead of hostname ip combination
+	conn         net.Conn // connection to the syslog server
 }
 
 // NewClient initializes a new server connection.
@@ -90,7 +91,10 @@ func NewClient(connectionType ConnectionType, address string) (*Client, error) {
 //   - Send("bar", LOG_DAEMON|LOG_DEBUG)
 func (client *Client) Send(message string, priority Priority) error {
 	timestamp := time.Now().Format("Jan _2 15:04:05")
-	hostnameCombi := fmt.Sprintf("%s/%s", client.Hostname, client.IP)
+	var hostnameCombi = client.Hostname
+	if !client.HostnameOnly {
+		hostnameCombi = fmt.Sprintf("%s/%s", client.Hostname, client.IP)
+	}
 	header := fmt.Sprintf("<%d>%s %s", int(priority), timestamp, hostnameCombi)
 	// RFC length reduction
 	if client.Rfc3164 && len(message) > 1024 {

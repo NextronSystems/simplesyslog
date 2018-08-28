@@ -8,6 +8,7 @@ package simplesyslog
 
 import (
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -41,6 +42,8 @@ type Client struct {
 	Rfc5424      bool     // rfc standard for length reduction
 	HostnameOnly bool     // Only use hostname in syslog header instead of hostname ip combination
 	conn         net.Conn // connection to the syslog server
+	bytesSent    int64
+	maxBytes     int64
 }
 
 // NewClient initializes a new server connection.
@@ -85,11 +88,18 @@ func NewClient(connectionType ConnectionType, address string) (*Client, error) {
 	}, nil
 }
 
+// TooManyBytesSentErr will be returned, if a message could not be sent
+// because of a hard limit of bytes to be send.
+var TooManyBytesSentErr = errors.New("too many bytes sent")
+
 // Send sends a syslog message with a specified priority.
 // Examples:
 //   - Send("foo", LOG_LOCAL0|LOG_NOTICE)
 //   - Send("bar", LOG_DAEMON|LOG_DEBUG)
 func (client *Client) Send(message string, priority Priority) error {
+	if client.maxBytes != 0 && client.bytesSent > client.maxBytes {
+		return TooManyBytesSentErr
+	}
 	timestamp := time.Now().Format("Jan _2 15:04:05")
 	var hostnameCombi = client.Hostname
 	if !client.HostnameOnly {
@@ -104,7 +114,8 @@ func (client *Client) Send(message string, priority Priority) error {
 		message = fmt.Sprintf("%s...", message[:2044])
 	}
 	// Send message
-	_, err := fmt.Fprintf(client.conn, "%s %s", header, message)
+	n, err := fmt.Fprintf(client.conn, "%s %s", header, message)
+	client.bytesSent += int64(n)
 	return err
 }
 
@@ -113,6 +124,9 @@ func (client *Client) Send(message string, priority Priority) error {
 //   - SendRaw("foo")
 //   - SendRaw("bar")
 func (client *Client) SendRaw(message string) error {
+	if client.maxBytes != 0 && client.bytesSent > client.maxBytes {
+		return TooManyBytesSentErr
+	}
 	// RFC length reduction
 	if client.Rfc3164 && len(message) > 1024 {
 		message = fmt.Sprintf("%s...", message[:1020])
@@ -121,11 +135,17 @@ func (client *Client) SendRaw(message string) error {
 		message = fmt.Sprintf("%s...", message[:2044])
 	}
 	// Send message
-	_, err := fmt.Fprintf(client.conn, message)
+	n, err := fmt.Fprintf(client.conn, message)
+	client.bytesSent += int64(n)
 	return err
 }
 
 // Close closes the server connection gracefully.
 func (client *Client) Close() error {
 	return client.conn.Close()
+}
+
+// SetMaxBytes sets the maximum bytes that will be sent to rsyslog (approximately)
+func (client *Client) SetMaxBytes(i int64) {
+	client.maxBytes = i
 }

@@ -40,6 +40,9 @@ type Client struct {
 	IP           string   // IP of the system
 	Rfc3164      bool     // rfc standard for length reduction
 	Rfc5424      bool     // rfc standard for length reduction
+	Rfc3339      bool     // use rfc3339 instead of stamp for time format
+	MaxLength    int      // max syslog length
+	NoPrio       bool     // do not add <prio> Prefix
 	HostnameOnly bool     // Only use hostname in syslog header instead of hostname ip combination
 	conn         net.Conn // connection to the syslog server
 	bytesSent    int64
@@ -100,18 +103,30 @@ func (client *Client) Send(message string, priority Priority) error {
 	if client.maxBytes != 0 && client.bytesSent > client.maxBytes {
 		return TooManyBytesSentErr
 	}
-	timestamp := time.Now().Format("Jan _2 15:04:05")
+	var timestamp string
+	if client.Rfc3339 {
+		timestamp = time.Now().UTC().Format(time.RFC3339)
+	} else {
+		timestamp = time.Now().UTC().Format(time.Stamp)
+	}
 	var hostnameCombi = client.Hostname
 	if !client.HostnameOnly {
 		hostnameCombi = fmt.Sprintf("%s/%s", client.Hostname, client.IP)
 	}
-	header := fmt.Sprintf("<%d>%s %s", int(priority), timestamp, hostnameCombi)
-	// RFC length reduction
-	if client.Rfc3164 && len(message) > 1024 {
-		message = fmt.Sprintf("%s...", message[:1020])
+	var header string
+	if client.NoPrio {
+		header = fmt.Sprintf("%s %s", timestamp, hostnameCombi)
+	} else {
+		header = fmt.Sprintf("<%d>%s %s", int(priority), timestamp, hostnameCombi)
 	}
-	if client.Rfc5424 && len(message) > 2048 {
-		message = fmt.Sprintf("%s...", message[:2044])
+	// RFC length reduction
+	length := len(message)
+	if client.Rfc3164 && length > 1024 {
+		message = fmt.Sprintf("%s...", message[:1021])
+	} else if client.Rfc5424 && length > 2048 {
+		message = fmt.Sprintf("%s...", message[:2045])
+	} else if client.MaxLength > 3 && length > client.MaxLength {
+		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
 	}
 	// Send message
 	n, err := fmt.Fprintf(client.conn, "%s %s", header, message)
@@ -128,11 +143,13 @@ func (client *Client) SendRaw(message string) error {
 		return TooManyBytesSentErr
 	}
 	// RFC length reduction
-	if client.Rfc3164 && len(message) > 1024 {
-		message = fmt.Sprintf("%s...", message[:1020])
-	}
-	if client.Rfc5424 && len(message) > 2048 {
-		message = fmt.Sprintf("%s...", message[:2044])
+	length := len(message)
+	if client.Rfc3164 && length > 1024 {
+		message = fmt.Sprintf("%s...", message[:1021])
+	} else if client.Rfc5424 && length > 2048 {
+		message = fmt.Sprintf("%s...", message[:2045])
+	} else if client.MaxLength > 3 && length > client.MaxLength {
+		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
 	}
 	// Send message
 	n, err := fmt.Fprintf(client.conn, message)

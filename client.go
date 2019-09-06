@@ -54,7 +54,7 @@ type Client struct {
 //   - NewClient(ConnectionUDP, "172.0.0.1:514")
 //   - NewClient(ConnectionTCP, ":514")
 //   - NewClient(ConnectionTLS, "172.0.0.1:514")
-func NewClient(connectionType ConnectionType, address string) (*Client, error) {
+func NewClient(connectionType ConnectionType, address string, tlsconfig *tls.Config) (*Client, error) {
 	// Validate data
 	if connectionType != ConnectionUDP && connectionType != ConnectionTCP && connectionType != ConnectionTLS {
 		return nil, fmt.Errorf("unknown connection type '%s'", connectionType)
@@ -65,9 +65,7 @@ func NewClient(connectionType ConnectionType, address string) (*Client, error) {
 	)
 	// connect via udp / tcp / tls
 	if connectionType == ConnectionTLS {
-		conn, err = tls.Dial(string(ConnectionTCP), address, &tls.Config{
-			InsecureSkipVerify: true,
-		})
+		conn, err = tls.Dial(string(ConnectionTCP), address, tlsconfig)
 	} else {
 		conn, err = net.Dial(string(connectionType), address)
 	}

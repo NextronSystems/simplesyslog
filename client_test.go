@@ -73,7 +73,7 @@ func testNewClientUDP(t *testing.T) {
 		/*
 		 * Send the message 'foo bar baz' to the syslog server
 		 */
-		client, err := NewClient(ConnectionUDP, host)
+		client, err := NewClient(ConnectionUDP, host, nil)
 		if err != nil {
 			t.Fatalf("could not initialize server: %s", err)
 		}
@@ -119,7 +119,7 @@ func testNewClientTCP(t *testing.T, useTLS bool) {
 		if useTLS {
 			connectionType = ConnectionTLS
 		}
-		client, err := NewClient(connectionType, host)
+		client, err := NewClient(connectionType, host, &tls.Config{InsecureSkipVerify: true})
 		if err != nil {
 			t.Fatalf("could not initialize server: %s", err)
 		}

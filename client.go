@@ -150,7 +150,7 @@ func (client *Client) SendRaw(message string) error {
 		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
 	}
 	// Send message
-	n, err := fmt.Fprintf(client.conn, message)
+	n, err := fmt.Fprint(client.conn, message)
 	client.bytesSent += int64(n)
 	return err
 }

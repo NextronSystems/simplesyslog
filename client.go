@@ -34,12 +34,16 @@ const (
 	DefaultIP string = ""
 )
 
+const (
+	Rfc3164   = 1024
+	Rfc5424   = 2048
+	Unlimited = 0
+)
+
 // Client holds a connection to a specified address
 type Client struct {
 	Hostname     string   // Hostname of the system
 	IP           string   // IP of the system
-	Rfc3164      bool     // rfc standard for length reduction
-	Rfc5424      bool     // rfc standard for length reduction
 	Rfc3339      bool     // use rfc3339 instead of stamp for time format
 	MaxLength    int      // max syslog length
 	NoPrio       bool     // do not add <prio> Prefix
@@ -119,11 +123,7 @@ func (client *Client) Send(message string, priority Priority) error {
 	}
 	// RFC length reduction
 	length := len(message)
-	if client.Rfc3164 && length > 1024 {
-		message = fmt.Sprintf("%s...", message[:1021])
-	} else if client.Rfc5424 && length > 2048 {
-		message = fmt.Sprintf("%s...", message[:2045])
-	} else if client.MaxLength > 3 && length > client.MaxLength {
+	if client.MaxLength > 3 && length > client.MaxLength {
 		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
 	}
 	// Send message
@@ -142,11 +142,7 @@ func (client *Client) SendRaw(message string) error {
 	}
 	// RFC length reduction
 	length := len(message)
-	if client.Rfc3164 && length > 1024 {
-		message = fmt.Sprintf("%s...", message[:1021])
-	} else if client.Rfc5424 && length > 2048 {
-		message = fmt.Sprintf("%s...", message[:2045])
-	} else if client.MaxLength > 3 && length > client.MaxLength {
+	if client.MaxLength > 3 && length > client.MaxLength {
 		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
 	}
 	// Send message

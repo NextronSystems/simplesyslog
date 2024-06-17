@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -42,15 +43,16 @@ const (
 
 // Client holds a connection to a specified address
 type Client struct {
-	Hostname     string   // Hostname of the system
-	IP           string   // IP of the system
-	Rfc3339      bool     // use rfc3339 instead of stamp for time format
-	MaxLength    int      // max syslog length
-	NoPrio       bool     // do not add <prio> Prefix
-	HostnameOnly bool     // Only use hostname in syslog header instead of hostname ip combination
-	conn         net.Conn // connection to the syslog server
-	bytesSent    int64
-	maxBytes     int64
+	Hostname     string // Hostname of the system
+	IP           string // IP of the system
+	Rfc3339      bool   // use rfc3339 instead of stamp for time format
+	MaxLength    int    // max syslog length
+	NoPrio       bool   // do not add <prio> Prefix
+	HostnameOnly bool   // Only use hostname in syslog header instead of hostname ip combination
+
+	conn      net.Conn // connection to the syslog server
+	bytesSent int64
+	maxBytes  int64
 }
 
 // NewClient initializes a new server connection.
@@ -126,8 +128,11 @@ func (client *Client) Send(message string, priority Priority) error {
 	if client.MaxLength > 3 && length > client.MaxLength {
 		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
 	}
+	message = strings.TrimSuffix(message, "\n")
 	// Send message
-	n, err := fmt.Fprintf(client.conn, "%s %s", header, message)
+	// While a terminating line break is not required in the RFC, it is "informal standard",
+	// especially for data streams like TCP where we don't have the "one message per datagram" concept.
+	n, err := fmt.Fprintf(client.conn, "%s %s\n", header, message)
 	client.bytesSent += int64(n)
 	return err
 }
@@ -144,6 +149,9 @@ func (client *Client) SendRaw(message string) error {
 	length := len(message)
 	if client.MaxLength > 3 && length > client.MaxLength {
 		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
+	}
+	if !strings.HasSuffix(message, "\n") {
+		message += "\n"
 	}
 	// Send message
 	n, err := fmt.Fprint(client.conn, message)

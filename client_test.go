@@ -1,13 +1,17 @@
 package simplesyslog
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
-	"io/ioutil"
+	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -47,12 +51,13 @@ b7Qnd7Fp63oHCv8XdstRAkEA5Lf2nA2rEi5WxvSIea5KUzQp6Ut1aCLjHpdU5Pk7
 
 var tlsConfig *tls.Config
 
-var messageRegex = regexp.MustCompile(`<133>[A-Z][a-z]{2} (([0-9]{2})|( [0-9])) [0-9]{2}:[0-9]{2}:[0-9]{2} testing\/127\.0\.0\.1 foo bar baz`)
+var messageRegex = regexp.MustCompile(`<133>[A-Z][a-z]{2} (([0-9]{2})|( [0-9])) [0-9]{2}:[0-9]{2}:[0-9]{2} testing\/[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ foo bar baz`)
 
 func TestNewClient(t *testing.T) {
 	testNewClientTCP(t, false)
 	testNewClientTCP(t, true)
 	testNewClientUDP(t)
+	testNewClientHTTP(t)
 }
 
 func testNewClientUDP(t *testing.T) {
@@ -68,21 +73,34 @@ func testNewClientUDP(t *testing.T) {
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second * 5)); err != nil {
 		t.Fatalf("could not set read deadline: %s", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
+
+	sendErr := make(chan error)
 	go func() {
+		defer close(sendErr)
 		/*
 		 * Send the message 'foo bar baz' to the syslog server
 		 */
-		client, err := NewClient(ConnectionUDP, host, nil)
+		client, err := NewClient(ConnectionUDP, host, nil, false)
 		if err != nil {
-			t.Fatalf("could not initialize server: %s", err)
+			sendErr <- fmt.Errorf("could not initialize server: %s", err)
+			return
 		}
 		client.Hostname = "testing" // overwrite hostname for testing
-		defer client.Close()
+		defer func() { _ = client.Close() }()
 		if err := client.Send("foo bar baz", LOG_LOCAL0|LOG_NOTICE); err != nil {
-			t.Fatalf("could not send message: %s", err)
+			sendErr <- fmt.Errorf("could not send message: %s", err)
+			return
+		}
+		sendErr <- nil
+	}()
+	defer func() {
+		err := <-sendErr
+		if err != nil {
+			t.Fatalf("could not establish sending part: %s", err)
 		}
 	}()
+
 	buf := make([]byte, 1024)
 	n, _, err := conn.ReadFrom(buf)
 	if err != nil {
@@ -110,8 +128,11 @@ func testNewClientTCP(t *testing.T, useTLS bool) {
 	if err != nil {
 		t.Fatalf("could not listen: %s", err)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
+
+	sendErr := make(chan error)
 	go func() {
+		defer close(sendErr)
 		/*
 		 * Send the message 'foo bar baz' to the syslog server
 		 */
@@ -119,32 +140,145 @@ func testNewClientTCP(t *testing.T, useTLS bool) {
 		if useTLS {
 			connectionType = ConnectionTLS
 		}
-		client, err := NewClient(connectionType, host, &tls.Config{InsecureSkipVerify: true})
+		client, err := NewClient(connectionType, host, &tls.Config{InsecureSkipVerify: true}, false)
 		if err != nil {
-			t.Fatalf("could not initialize server: %s", err)
+			sendErr <- fmt.Errorf("could not initialize server: %s", err)
+			return
 		}
 		client.Hostname = "testing" // overwrite hostname for testing
-		defer client.Close()
+		defer func() { _ = client.Close() }()
 		if err := client.Send("foo bar baz", LOG_LOCAL0|LOG_NOTICE); err != nil {
-			t.Fatalf("could not send message: %s", err)
+			sendErr <- fmt.Errorf("could not send message: %s", err)
+			return
 		}
 	}()
-	for {
-		conn, err := listener.Accept()
+	defer func() {
+		err := <-sendErr
 		if err != nil {
-			t.Fatalf("could not accept connection: %s", err)
+			t.Fatalf("could not establish sending part: %s", err)
 		}
-		defer conn.Close()
-		b, err := ioutil.ReadAll(conn)
+	}()
+
+	conn, err := listener.Accept()
+	if err != nil {
+		t.Fatalf("could not accept connection: %s", err)
+	}
+	defer func() { _ = conn.Close() }()
+	b, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("could not read all: %s", err)
+	}
+	if !messageRegex.MatchString(string(b)) {
+		t.Fatalf("wrong message: %s", string(b))
+	} else {
+		t.Logf("correct message: '%s'", string(b))
+	}
+}
+
+func testNewClientHTTP(t *testing.T) {
+	testCases := []struct {
+		name    string
+		useJson bool
+		useRaw  bool
+	}{
+		{name: "plain text", useJson: false, useRaw: false},
+		{name: "json text", useJson: true, useRaw: false},
+		{name: "json raw", useJson: true, useRaw: true},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Logf("testing http %s", tc.name)
+			testNewClientHTTPSpecific(t, tc.useJson, tc.useRaw)
+		})
+	}
+}
+
+func testNewClientHTTPSpecific(t *testing.T, useJson, useRaw bool) {
+	endpointPath := "/syslog/endpoint"
+	msgContent := "foo bar baz"
+	if useJson && useRaw {
+		msgContent = fmt.Sprintf(`{"message":"%s"}`, msgContent)
+	}
+
+	serverErr := make(chan error)
+	handler := http.NewServeMux()
+	handler.HandleFunc(endpointPath, func(w http.ResponseWriter, r *http.Request) {
+		defer func() { close(serverErr) }()
+		if r.Method != http.MethodPost {
+			serverErr <- fmt.Errorf("wrong method: %s", r.Method)
+			return
+		}
+		jsonExpected := useJson && useRaw
+		if jsonExpected != (r.Header.Get("Content-Type") == "application/json") {
+			serverErr <- fmt.Errorf("wrong content type: %s", r.Header.Get("Content-Type"))
+			return
+		}
+		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			t.Fatalf("could not read all: %s", err)
+			serverErr <- fmt.Errorf("could not read body: %s", err)
+			return
 		}
-		if !messageRegex.MatchString(string(b)) {
-			t.Fatalf("wrong message: %s", string(b))
+		if !jsonExpected && !messageRegex.Match(body) || jsonExpected && strings.TrimRight(string(body), "\n") != msgContent {
+			serverErr <- fmt.Errorf("wrong message: %s", string(body))
 		} else {
-			t.Logf("correct message: '%s'", string(b))
+			t.Logf("correct message: '%s'", string(body))
 		}
-		return
+	})
+	server := &http.Server{
+		Addr:    host,
+		Handler: handler,
+	}
+	go func() {
+		if err := server.ListenAndServe(); err != http.ErrServerClosed {
+			t.Error(err)
+			return
+		}
+	}()
+	t.Cleanup(func() {
+		_ = server.Shutdown(context.Background())
+	})
+
+	sendErr := make(chan error)
+	go func() {
+		defer close(sendErr)
+		/*
+		 * Send the message 'foo bar baz' to the syslog server
+		 */
+		client, err := NewClient(ConnectionHTTP, "http://"+host+endpointPath, tlsConfig, useJson)
+		if err != nil {
+			sendErr <- fmt.Errorf("could not initialize server: %s", err)
+			return
+		}
+		client.Hostname = "testing" // overwrite hostname for testing
+		defer func() { _ = client.Close() }()
+
+		sendFunc := func(message string) error { return client.Send(message, LOG_LOCAL0|LOG_NOTICE) }
+		if useRaw {
+			sendFunc = client.SendRaw
+		}
+		if err := sendFunc(msgContent); err != nil {
+			// Retry: fast repeated server set up/tear down just fails sometimes with "connection refused"
+			if err := sendFunc(msgContent); err != nil {
+				sendErr <- fmt.Errorf("could not send message: %s", err)
+				return
+			}
+		}
+	}()
+	defer func() {
+		err := <-sendErr
+		if err != nil {
+			t.Fatalf("could not establish sending part: %s", err)
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("server failed to read the message: %s", err)
+		}
+	case <-time.After(time.Second * 5):
+		t.Fatalf("server did not receive the message in time")
 	}
 }
 

@@ -19,12 +19,12 @@ import (
 const SyslogServer = "<hostname>:<port>"
 
 func main() {
-    client, err := syslog.NewClient(syslog.ConnectionUDP, SyslogServer)
+    client, err := syslog.NewClient(syslog.ConnectionUDP, SyslogServer, false)
     if err != nil {
         ...
     }
     defer client.Close()
-    if err := client.Send("foo bar baz", syslog.LOG_LOCAL0|syslog.LOG_NOTICE); err != nil {
+    if err := client.Send("foo bar baz", syslog.LOG_LOCAL0|syslog.LOG_NOTICE, ""); err != nil {
         ...
     }
 }

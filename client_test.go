@@ -81,7 +81,7 @@ func testNewClientUDP(t *testing.T) {
 		/*
 		 * Send the message 'foo bar baz' to the syslog server
 		 */
-		client, err := NewClient(ConnectionUDP, host, nil, false)
+		client, err := NewClient(ConnectionUDP, host, nil)
 		if err != nil {
 			sendErr <- fmt.Errorf("could not initialize server: %s", err)
 			return
@@ -140,7 +140,7 @@ func testNewClientTCP(t *testing.T, useTLS bool) {
 		if useTLS {
 			connectionType = ConnectionTLS
 		}
-		client, err := NewClient(connectionType, host, &tls.Config{InsecureSkipVerify: true}, false)
+		client, err := NewClient(connectionType, host, &tls.Config{InsecureSkipVerify: true})
 		if err != nil {
 			sendErr <- fmt.Errorf("could not initialize server: %s", err)
 			return
@@ -175,31 +175,40 @@ func testNewClientTCP(t *testing.T, useTLS bool) {
 	}
 }
 
+type sendFuncType string
+
+const (
+	sendPlain sendFuncType = "plain"
+	sendJSON  sendFuncType = "json"
+	sendRaw   sendFuncType = "raw"
+)
+
 func testNewClientHTTP(t *testing.T) {
 	testCases := []struct {
-		name    string
-		useJson bool
-		useRaw  bool
+		name     string
+		sendFunc sendFuncType
 	}{
-		{name: "plain text", useJson: false, useRaw: false},
-		{name: "json text", useJson: true, useRaw: false},
-		{name: "json raw", useJson: true, useRaw: true},
+		{name: "plain text", sendFunc: sendPlain},
+		{name: "raw", sendFunc: sendRaw},
+		{name: "json", sendFunc: sendJSON},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Logf("testing http %s", tc.name)
-			testNewClientHTTPSpecific(t, tc.useJson, tc.useRaw)
+			testNewClientHTTPSpecific(t, tc.sendFunc)
 		})
 	}
 }
 
-func testNewClientHTTPSpecific(t *testing.T, useJson, useRaw bool) {
+func testNewClientHTTPSpecific(t *testing.T, sendFunc sendFuncType) {
 	endpointPath := "/syslog/endpoint"
 	msgContent := "foo bar baz"
-	if useJson && useRaw {
+	jsonExpected := sendFunc == sendJSON
+	if jsonExpected {
 		msgContent = fmt.Sprintf(`{"message":"%s"}`, msgContent)
 	}
+	rawExpected := sendFunc != sendPlain
 
 	serverErr := make(chan error)
 	handler := http.NewServeMux()
@@ -209,7 +218,6 @@ func testNewClientHTTPSpecific(t *testing.T, useJson, useRaw bool) {
 			serverErr <- fmt.Errorf("wrong method: %s", r.Method)
 			return
 		}
-		jsonExpected := useJson && useRaw
 		if jsonExpected != (r.Header.Get("Content-Type") == "application/json") {
 			serverErr <- fmt.Errorf("wrong content type: %s", r.Header.Get("Content-Type"))
 			return
@@ -219,7 +227,7 @@ func testNewClientHTTPSpecific(t *testing.T, useJson, useRaw bool) {
 			serverErr <- fmt.Errorf("could not read body: %s", err)
 			return
 		}
-		if !jsonExpected && !messageRegex.Match(body) || jsonExpected && strings.TrimRight(string(body), "\n") != msgContent {
+		if !rawExpected && !messageRegex.Match(body) || rawExpected && strings.TrimRight(string(body), "\n") != msgContent {
 			serverErr <- fmt.Errorf("wrong message: %s", string(body))
 		} else {
 			t.Logf("correct message: '%s'", string(body))
@@ -245,7 +253,7 @@ func testNewClientHTTPSpecific(t *testing.T, useJson, useRaw bool) {
 		/*
 		 * Send the message 'foo bar baz' to the syslog server
 		 */
-		client, err := NewClient(ConnectionHTTP, "http://"+host+endpointPath, tlsConfig, useJson)
+		client, err := NewClient(ConnectionHTTP, "http://"+host+endpointPath, tlsConfig)
 		if err != nil {
 			sendErr <- fmt.Errorf("could not initialize server: %s", err)
 			return
@@ -253,13 +261,18 @@ func testNewClientHTTPSpecific(t *testing.T, useJson, useRaw bool) {
 		client.Hostname = "testing" // overwrite hostname for testing
 		defer func() { _ = client.Close() }()
 
-		sendFunc := func(message string) error { return client.Send(message, LOG_LOCAL0|LOG_NOTICE) }
-		if useRaw {
-			sendFunc = client.SendRaw
+		var sendFunction func(message string) error
+		switch sendFunc {
+		case sendJSON:
+			sendFunction = client.SendJSON
+		case sendRaw:
+			sendFunction = client.SendRaw
+		default:
+			sendFunction = func(message string) error { return client.Send(message, LOG_LOCAL0|LOG_NOTICE) }
 		}
-		if err := sendFunc(msgContent); err != nil {
+		if err := sendFunction(msgContent); err != nil {
 			// Retry: fast repeated server set up/tear down just fails sometimes with "connection refused"
-			if err := sendFunc(msgContent); err != nil {
+			if err := sendFunction(msgContent); err != nil {
 				sendErr <- fmt.Errorf("could not send message: %s", err)
 				return
 			}

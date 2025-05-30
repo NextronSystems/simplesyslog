@@ -61,7 +61,6 @@ type Client struct {
 type connectionWriter struct {
 	httpURL     string      // HTTP(S) URL. If empty, a non-HTTP connection is used.
 	client      http.Client // Connection client if HTTP(S)
-	jsonContent bool        // Raw messages are sent as JSON
 
 	conn net.Conn // Connection if not HTTP(S)
 
@@ -69,7 +68,7 @@ type connectionWriter struct {
 }
 
 // WriteString writes a string to the connection.
-func (c *connectionWriter) WriteString(s string, raw bool) (int, error) {
+func (c *connectionWriter) WriteString(s string, contentType string) (int, error) {
 	// While a terminating line break is not required in the RFC, it is "informal standard",
 	// especially for data streams like TCP where we don't have the "one message per datagram" concept.
 	if !strings.HasSuffix(s, "\n") {
@@ -77,9 +76,8 @@ func (c *connectionWriter) WriteString(s string, raw bool) (int, error) {
 	}
 	if c.httpURL != "" {
 		// Send the message via HTTP(S)
-		contentType := "text/plain"
-		if c.jsonContent && raw {
-			contentType = "application/json"
+		if contentType == "" {
+			contentType = "text/plain"
 		}
 		resp, err := c.client.Post(c.httpURL, contentType, strings.NewReader(s))
 		if err != nil {
@@ -107,13 +105,13 @@ func (c *connectionWriter) Close() error {
 	return nil
 }
 
-// NewClient initializes a new server connection. If jsonContent is true and connection type is HTTP, _raw_ messages will be sent with JSON content type.
+// NewClient initializes a new server connection.
 // Examples:
 //   - NewClient(ConnectionUDP, "172.0.0.1:514")
 //   - NewClient(ConnectionTCP, ":514")
 //   - NewClient(ConnectionTLS, "172.0.0.1:514")
 //   - NewClient(ConnectionHTTP, "https://example.com:8080/syslog")
-func NewClient(connectionType ConnectionType, address string, tlsconfig *tls.Config, jsonContent bool) (*Client, error) {
+func NewClient(connectionType ConnectionType, address string, tlsconfig *tls.Config) (*Client, error) {
 	// Validate data
 	if connectionType != ConnectionUDP && connectionType != ConnectionTCP && connectionType != ConnectionTLS && connectionType != ConnectionHTTP {
 		return nil, fmt.Errorf("unknown connection type '%s'", connectionType)
@@ -135,7 +133,6 @@ func NewClient(connectionType ConnectionType, address string, tlsconfig *tls.Con
 		connWriter = connectionWriter{
 			httpURL:     address,
 			client:      http.Client{Transport: transport},
-			jsonContent: jsonContent,
 		}
 	} else {
 		var conn net.Conn
@@ -185,11 +182,19 @@ func getLocalIP(conn net.Conn) (string, error) {
 // because of a hard limit of bytes to be send.
 var ErrTooManyBytesSent = errors.New("too many bytes sent")
 
-// Send sends a syslog message with a specified priority. It adds a syslog header with timestamp, hostname and priority. If maskedHostname is provided, it will be used instead of the hostname/IP combination.
+// Send sends a syslog message with a specified priority. It adds a syslog header with timestamp, hostname and priority.
+// Examples:
+//   - Send("foo", LOG_LOCAL0|LOG_NOTICE)
+//   - Send("bar", LOG_DAEMON|LOG_DEBUG)
+func (client *Client) Send(message string, priority Priority) error {
+	return client.SendMasked(message, priority, "")
+}
+
+// SendMasked sends a syslog message with a specified priority. It adds a syslog header with timestamp, hostname and priority. If maskedHostname is provided, it will be used instead of the hostname/IP combination.
 // Examples:
 //   - Send("foo", LOG_LOCAL0|LOG_NOTICE, "")
 //   - Send("bar", LOG_DAEMON|LOG_DEBUG, "myhost")
-func (client *Client) Send(message string, priority Priority, maskedHostname string) error {
+func (client *Client) SendMasked(message string, priority Priority, maskedHostname string) error {
 	if client.maxBytes != 0 && client.connWriter.Exceeds(client.maxBytes) {
 		return ErrTooManyBytesSent
 	}
@@ -220,7 +225,15 @@ func (client *Client) Send(message string, priority Priority, maskedHostname str
 		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
 	}
 	outMsg := fmt.Sprintf("%s %s", header, message)
-	return client.sendRaw(outMsg, false)
+	return client.sendRaw(outMsg, "")
+}
+
+// SendJSON sends a syslog message as a JSON message if applicable, i.e., if connection type is HTTP(S) Content-Type is set accordingly. Note: message should be valid JSON. No syslog header is added and a check for MaxLength is not applied here.
+// Examples:
+//   - SendRaw("foo")
+//   - SendRaw("bar")
+func (client *Client) SendJSON(message string) error {
+	return client.sendRaw(message, "application/json")
 }
 
 // SendRaw sends a syslog message without adding syslog header. Note: a check for MaxLength is not applied here.
@@ -228,15 +241,16 @@ func (client *Client) Send(message string, priority Priority, maskedHostname str
 //   - SendRaw("foo")
 //   - SendRaw("bar")
 func (client *Client) SendRaw(message string) error {
-	return client.sendRaw(message, true)
+	return client.sendRaw(message, "")
 }
 
-func (client *Client) sendRaw(message string, rawRequest bool) error {
+// sendRaw sends a raw syslog message without adding a syslog header. If contentType is set, it will be used as the Content-Type header for HTTP(S) connections. Note: a check for MaxLength is not applied here.
+func (client *Client) sendRaw(message string, contentType string) error {
 	if client.maxBytes != 0 && client.connWriter.Exceeds(client.maxBytes) {
 		return ErrTooManyBytesSent
 	}
 	// Send message
-	_, err := client.connWriter.WriteString(message, rawRequest)
+	_, err := client.connWriter.WriteString(message, contentType)
 	return err
 }
 

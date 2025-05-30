@@ -1,7 +1,6 @@
 package simplesyslog
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
@@ -9,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strconv"
 	"strings"
@@ -202,7 +202,6 @@ func testNewClientHTTP(t *testing.T) {
 }
 
 func testNewClientHTTPSpecific(t *testing.T, sendFunc sendFuncType) {
-	endpointPath := "/syslog/endpoint"
 	msgContent := "foo bar baz"
 	jsonExpected := sendFunc == sendJSON
 	if jsonExpected {
@@ -211,8 +210,7 @@ func testNewClientHTTPSpecific(t *testing.T, sendFunc sendFuncType) {
 	rawExpected := sendFunc != sendPlain
 
 	serverErr := make(chan error)
-	handler := http.NewServeMux()
-	handler.HandleFunc(endpointPath, func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() { close(serverErr) }()
 		if r.Method != http.MethodPost {
 			serverErr <- fmt.Errorf("wrong method: %s", r.Method)
@@ -232,20 +230,8 @@ func testNewClientHTTPSpecific(t *testing.T, sendFunc sendFuncType) {
 		} else {
 			t.Logf("correct message: '%s'", string(body))
 		}
-	})
-	server := &http.Server{
-		Addr:    host,
-		Handler: handler,
-	}
-	go func() {
-		if err := server.ListenAndServe(); err != http.ErrServerClosed {
-			t.Error(err)
-			return
-		}
-	}()
-	t.Cleanup(func() {
-		_ = server.Shutdown(context.Background())
-	})
+	}))
+	defer ts.Close()
 
 	sendErr := make(chan error)
 	go func() {
@@ -253,7 +239,7 @@ func testNewClientHTTPSpecific(t *testing.T, sendFunc sendFuncType) {
 		/*
 		 * Send the message 'foo bar baz' to the syslog server
 		 */
-		client, err := NewClient(ConnectionHTTP, "http://"+host+endpointPath, tlsConfig)
+		client, err := NewClient(ConnectionHTTP, ts.URL, tlsConfig)
 		if err != nil {
 			sendErr <- fmt.Errorf("could not initialize server: %s", err)
 			return
@@ -271,11 +257,8 @@ func testNewClientHTTPSpecific(t *testing.T, sendFunc sendFuncType) {
 			sendFunction = func(message string) error { return client.Send(message, LOG_LOCAL0|LOG_NOTICE) }
 		}
 		if err := sendFunction(msgContent); err != nil {
-			// Retry: fast repeated server set up/tear down just fails sometimes with "connection refused"
-			if err := sendFunction(msgContent); err != nil {
-				sendErr <- fmt.Errorf("could not send message: %s", err)
-				return
-			}
+			sendErr <- fmt.Errorf("could not send message: %s", err)
+			return
 		}
 	}()
 	defer func() {

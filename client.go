@@ -10,9 +10,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -26,12 +24,14 @@ const (
 	ConnectionTCP ConnectionType = "tcp"
 	// ConnectionTLS connects via TLS
 	ConnectionTLS ConnectionType = "tls"
+	// ConnectionHTTP connects via HTTP(S)
+	ConnectionHTTP ConnectionType = "http"
 )
 
 const (
 	// DefaultHostname will be used if hostname could not be determined
 	DefaultHostname string = "unknown"
-	// DefaultIP will be used if ip could not be determined
+	// DefaultIP will be used if host address could not be determined
 	DefaultIP string = ""
 )
 
@@ -48,11 +48,10 @@ type Client struct {
 	Rfc3339      bool   // use rfc3339 instead of stamp for time format
 	MaxLength    int    // max syslog length
 	NoPrio       bool   // do not add <prio> Prefix
-	HostnameOnly bool   // Only use hostname in syslog header instead of hostname ip combination
+	HostnameOnly bool   // Only use hostname in syslog header instead of hostname/IP combination
 
-	conn      net.Conn // connection to the syslog server
-	bytesSent int64
-	maxBytes  int64
+	connWriter ConnectionWriter // Writer with a connection to the syslog server
+	maxBytes   int64
 }
 
 // NewClient initializes a new server connection.
@@ -60,52 +59,50 @@ type Client struct {
 //   - NewClient(ConnectionUDP, "172.0.0.1:514")
 //   - NewClient(ConnectionTCP, ":514")
 //   - NewClient(ConnectionTLS, "172.0.0.1:514")
+//   - NewClient(ConnectionHTTP, "https://example.com:8080/syslog")
 func NewClient(connectionType ConnectionType, address string, tlsconfig *tls.Config) (*Client, error) {
-	// Validate data
-	if connectionType != ConnectionUDP && connectionType != ConnectionTCP && connectionType != ConnectionTLS {
-		return nil, fmt.Errorf("unknown connection type '%s'", connectionType)
-	}
-	var (
-		conn net.Conn
-		err  error
-	)
-	// connect via udp / tcp / tls
-	if connectionType == ConnectionTLS {
-		conn, err = tls.Dial(string(ConnectionTCP), address, tlsconfig)
-	} else {
-		conn, err = net.Dial(string(connectionType), address)
-	}
+	connWriter, err := NewConnectionWriter(connectionType, address, tlsconfig)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not create connection writer: %w", err)
 	}
 	// get hostname and ip of system
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = DefaultHostname
 	}
-	ip, _, err := net.SplitHostPort(conn.LocalAddr().String())
-	if err != nil {
-		ip = DefaultIP
+	ip := DefaultIP
+	if netIP, err := connWriter.SourceIP(); err == nil {
+		ip = netIP.String()
 	}
 	// return the server
 	return &Client{
-		Hostname: hostname,
-		IP:       ip,
-		conn:     conn,
+		Hostname:   hostname,
+		IP:         ip,
+		connWriter: connWriter,
 	}, nil
 }
 
-// TooManyBytesSentErr will be returned, if a message could not be sent
-// because of a hard limit of bytes to be send.
-var TooManyBytesSentErr = errors.New("too many bytes sent")
+// ErrTooManyBytesSent will be returned, if a message could not be sent
+// because of a hard limit of bytes to be sent.
+var ErrTooManyBytesSent = errors.New("too many bytes sent")
 
-// Send sends a syslog message with a specified priority.
+// Send sends a syslog message with a specified priority. It adds a syslog header with timestamp, hostname and priority.
 // Examples:
 //   - Send("foo", LOG_LOCAL0|LOG_NOTICE)
 //   - Send("bar", LOG_DAEMON|LOG_DEBUG)
 func (client *Client) Send(message string, priority Priority) error {
-	if client.maxBytes != 0 && client.bytesSent > client.maxBytes {
-		return TooManyBytesSentErr
+	return client.SendMasked(message, priority, "")
+}
+
+// SendMasked sends a syslog message with a specified priority. It adds a syslog header
+// with timestamp, hostname and priority. If maskedHostname is provided, it will be used
+// instead of the hostname/IP combination.
+// Examples:
+//   - Send("foo", LOG_LOCAL0|LOG_NOTICE, "")
+//   - Send("bar", LOG_DAEMON|LOG_DEBUG, "myhost")
+func (client *Client) SendMasked(message string, priority Priority, maskedHostname string) error {
+	if client.maxBytes != 0 && client.connWriter.Exceeds(client.maxBytes) {
+		return ErrTooManyBytesSent
 	}
 	var timestamp string
 	if client.Rfc3339 {
@@ -113,10 +110,20 @@ func (client *Client) Send(message string, priority Priority) error {
 	} else {
 		timestamp = time.Now().UTC().Format(time.Stamp)
 	}
-	var hostnameCombi = client.Hostname
-	if !client.HostnameOnly {
+
+	var hostnameCombi string
+	switch {
+	case maskedHostname != "":
+		// Use masked hostname if provided (without an additional IP, i.e., ignore HostnameOnly)
+		hostnameCombi = maskedHostname
+	case !client.HostnameOnly:
+		// Use hostname and IP if HostnameOnly is false
 		hostnameCombi = fmt.Sprintf("%s/%s", client.Hostname, client.IP)
+	default:
+		// Fallback to hostname only
+		hostnameCombi = client.Hostname
 	}
+
 	var header string
 	if client.NoPrio {
 		header = fmt.Sprintf("%s %s", timestamp, hostnameCombi)
@@ -128,43 +135,42 @@ func (client *Client) Send(message string, priority Priority) error {
 	if client.MaxLength > 3 && length > client.MaxLength {
 		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
 	}
-	message = strings.TrimSuffix(message, "\n")
-	// Send message
-	// While a terminating line break is not required in the RFC, it is "informal standard",
-	// especially for data streams like TCP where we don't have the "one message per datagram" concept.
-	n, err := fmt.Fprintf(client.conn, "%s %s\n", header, message)
-	client.bytesSent += int64(n)
-	return err
+	outMsg := fmt.Sprintf("%s %s", header, message)
+	return client.sendRaw(outMsg, "")
 }
 
-// SendRaw sends a syslog message without adding syslog header.
+// SendJSON sends a syslog message as a JSON message if applicable, i.e., if connection type is HTTP(S) Content-Type is set accordingly. Note: message should be valid JSON. No syslog header is added and a check for MaxLength is not applied here.
+// Examples:
+//   - SendRaw("foo")
+//   - SendRaw("bar")
+func (client *Client) SendJSON(message string) error {
+	return client.sendRaw(message, "application/json")
+}
+
+// SendRaw sends a syslog message without adding syslog header. Note: a check for MaxLength is not applied here.
 // Examples:
 //   - SendRaw("foo")
 //   - SendRaw("bar")
 func (client *Client) SendRaw(message string) error {
-	if client.maxBytes != 0 && client.bytesSent > client.maxBytes {
-		return TooManyBytesSentErr
-	}
-	// RFC length reduction
-	length := len(message)
-	if client.MaxLength > 3 && length > client.MaxLength {
-		message = fmt.Sprintf("%s...", message[:client.MaxLength-3])
-	}
-	if !strings.HasSuffix(message, "\n") {
-		message += "\n"
+	return client.sendRaw(message, "")
+}
+
+// sendRaw sends a raw syslog message without adding a syslog header. If contentType is set, it will be used as the Content-Type header for HTTP(S) connections. Note: a check for MaxLength is not applied here.
+func (client *Client) sendRaw(message string, contentType string) error {
+	if client.maxBytes != 0 && client.connWriter.Exceeds(client.maxBytes) {
+		return ErrTooManyBytesSent
 	}
 	// Send message
-	n, err := fmt.Fprint(client.conn, message)
-	client.bytesSent += int64(n)
+	_, err := client.connWriter.WriteString(message, contentType)
 	return err
 }
 
 // Close closes the server connection gracefully.
 func (client *Client) Close() error {
-	return client.conn.Close()
+	return client.connWriter.Close()
 }
 
-// SetMaxBytes sets the maximum bytes that will be sent to rsyslog (approximately)
+// SetMaxBytes sets the maximum bytes that will be sent to rsyslog
 func (client *Client) SetMaxBytes(i int64) {
 	client.maxBytes = i
 }

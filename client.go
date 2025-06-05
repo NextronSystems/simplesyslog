@@ -10,10 +10,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"net"
-	"net/http"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -53,56 +50,8 @@ type Client struct {
 	NoPrio       bool   // do not add <prio> Prefix
 	HostnameOnly bool   // Only use hostname in syslog header instead of hostname/IP combination
 
-	connWriter connectionWriter // Writer with a connection to the syslog server
+	connWriter ConnectionWriter // Writer with a connection to the syslog server
 	maxBytes   int64
-}
-
-// connWriter is used to write to the connection.
-type connectionWriter struct {
-	httpURL     string      // HTTP(S) URL. If empty, a non-HTTP connection is used.
-	client      http.Client // Connection client if HTTP(S)
-
-	conn net.Conn // Connection if not HTTP(S)
-
-	bytesWritten int64 // Number of bytes written
-}
-
-// WriteString writes a string to the connection.
-func (c *connectionWriter) WriteString(s string, contentType string) (int, error) {
-	// While a terminating line break is not required in the RFC, it is "informal standard",
-	// especially for data streams like TCP where we don't have the "one message per datagram" concept.
-	if !strings.HasSuffix(s, "\n") {
-		s += "\n"
-	}
-	if c.httpURL != "" {
-		// Send the message via HTTP(S)
-		if contentType == "" {
-			contentType = "text/plain"
-		}
-		resp, err := c.client.Post(c.httpURL, contentType, strings.NewReader(s))
-		if err != nil {
-			return 0, err
-		}
-		defer func() { _ = resp.Body.Close() }()
-		c.bytesWritten += int64(len(s))
-		return len(s), nil
-	} else {
-		// Send the message via TCP/UDP
-		n, err := fmt.Fprint(c.conn, s)
-		c.bytesWritten += int64(n)
-		return n, err
-	}
-}
-
-func (c *connectionWriter) Exceeds(byteLimit int64) bool {
-	return c.bytesWritten > byteLimit
-}
-
-func (c *connectionWriter) Close() error {
-	if c.conn != nil {
-		return c.conn.Close()
-	}
-	return nil
 }
 
 // NewClient initializes a new server connection.
@@ -112,49 +61,18 @@ func (c *connectionWriter) Close() error {
 //   - NewClient(ConnectionTLS, "172.0.0.1:514")
 //   - NewClient(ConnectionHTTP, "https://example.com:8080/syslog")
 func NewClient(connectionType ConnectionType, address string, tlsconfig *tls.Config) (*Client, error) {
-	// Validate data
-	if connectionType != ConnectionUDP && connectionType != ConnectionTCP && connectionType != ConnectionTLS && connectionType != ConnectionHTTP {
-		return nil, fmt.Errorf("unknown connection type '%s'", connectionType)
-	}
-	var (
-		connWriter connectionWriter
-		err        error
-	)
-	if connectionType == ConnectionHTTP {
-		defaultTransport, isTransport := http.DefaultTransport.(*http.Transport)
-		if !isTransport {
-			panic("DefaultTransport is not of type *http.Transport")
-		}
-		transport := defaultTransport
-		if tlsconfig != nil {
-			transport = defaultTransport.Clone()
-			transport.TLSClientConfig = tlsconfig
-		}
-		connWriter = connectionWriter{
-			httpURL:     address,
-			client:      http.Client{Transport: transport},
-		}
-	} else {
-		var conn net.Conn
-		// connect via udp / tcp / tls
-		if connectionType == ConnectionTLS {
-			conn, err = tls.Dial(string(ConnectionTCP), address, tlsconfig)
-		} else {
-			conn, err = net.Dial(string(connectionType), address)
-		}
-		if err != nil {
-			return nil, err
-		}
-		connWriter = connectionWriter{conn: conn}
+	connWriter, err := NewConnectionWriter(connectionType, address, tlsconfig)
+	if err != nil {
+		return nil, fmt.Errorf("could not create connection writer: %w", err)
 	}
 	// get hostname and ip of system
 	hostname, err := os.Hostname()
 	if err != nil {
 		hostname = DefaultHostname
 	}
-	ip, err := getLocalIP(connWriter.conn)
-	if err != nil {
-		ip = DefaultIP
+	ip := DefaultIP
+	if netIP, err := connWriter.SourceIP(); err == nil {
+		ip = netIP.String()
 	}
 	// return the server
 	return &Client{
@@ -164,22 +82,8 @@ func NewClient(connectionType ConnectionType, address string, tlsconfig *tls.Con
 	}, nil
 }
 
-func getLocalIP(conn net.Conn) (string, error) {
-	if conn == nil {
-		// Create a temporary, non-physical connection to determine the local IP (no handshake in UDP)
-		var err error
-		conn, err = net.Dial("udp", "8.8.8.8:80")
-		if err != nil {
-			return "", fmt.Errorf("could not create logical connection to determine local IP: %w", err)
-		}
-		defer func() { _ = conn.Close() }()
-	}
-	ip, _, err := net.SplitHostPort(conn.LocalAddr().String())
-	return ip, err
-}
-
 // ErrTooManyBytesSent will be returned, if a message could not be sent
-// because of a hard limit of bytes to be send.
+// because of a hard limit of bytes to be sent.
 var ErrTooManyBytesSent = errors.New("too many bytes sent")
 
 // Send sends a syslog message with a specified priority. It adds a syslog header with timestamp, hostname and priority.
@@ -190,7 +94,9 @@ func (client *Client) Send(message string, priority Priority) error {
 	return client.SendMasked(message, priority, "")
 }
 
-// SendMasked sends a syslog message with a specified priority. It adds a syslog header with timestamp, hostname and priority. If maskedHostname is provided, it will be used instead of the hostname/IP combination.
+// SendMasked sends a syslog message with a specified priority. It adds a syslog header
+// with timestamp, hostname and priority. If maskedHostname is provided, it will be used
+// instead of the hostname/IP combination.
 // Examples:
 //   - Send("foo", LOG_LOCAL0|LOG_NOTICE, "")
 //   - Send("bar", LOG_DAEMON|LOG_DEBUG, "myhost")
@@ -204,15 +110,20 @@ func (client *Client) SendMasked(message string, priority Priority, maskedHostna
 	} else {
 		timestamp = time.Now().UTC().Format(time.Stamp)
 	}
-	var hostnameCombi = client.Hostname
-	if maskedHostname == "" {
-		if !client.HostnameOnly {
-			hostnameCombi = fmt.Sprintf("%s/%s", hostnameCombi, client.IP)
-		}
-	} else {
+
+	var hostnameCombi string
+	switch {
+	case maskedHostname != "":
 		// Use masked hostname if provided (without an additional IP, i.e., ignore HostnameOnly)
 		hostnameCombi = maskedHostname
+	case !client.HostnameOnly:
+		// Use hostname and IP if HostnameOnly is false
+		hostnameCombi = fmt.Sprintf("%s/%s", client.Hostname, client.IP)
+	default:
+		// Fallback to hostname only
+		hostnameCombi = client.Hostname
 	}
+
 	var header string
 	if client.NoPrio {
 		header = fmt.Sprintf("%s %s", timestamp, hostnameCombi)
